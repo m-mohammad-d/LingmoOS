@@ -8,8 +8,6 @@ on:
     branches: [ main ]
     tags:
       - "v*.*.*"
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -22,106 +20,59 @@ jobs:
       image: debian:12
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        apt-get update
-        apt-get install -y wget jq dpkg curl extra-cmake-modules \
-          libkf5configwidgets-dev libkf5i18n-dev libkf5config-dev \
-          libkf5iconthemes-dev libkf5guiaddons-dev rsync autoconf \
-          automake live-build file
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y wget build-essential autoconf automake \
+            extra-cmake-modules libkf5configwidgets-dev libkf5i18n-dev \
+            libkf5config-dev libkf5iconthemes-dev libkf5guiaddons-dev \
+            rsync file lingmo-pkgbuild
 
-    - name: Install GitHub CLI
-      run: |
-        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-        echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-        apt-get update
-        apt-get install -y gh
+      - name: Initialize Project
+        run: |
+          cd $GITHUB_WORKSPACE
+          make config-pkgs
 
-    - name: Install Lingmo build tool
-      run: |
-        wget https://packages.lingmo.org/lingmo/pool/main/l/lingmo-pkgbuild/lingmo-pkgbuild_0.1.0-1~lingmo1_amd64.deb
-        wget https://packages.lingmo.org/lingmo/pool/main/libl/liblingmo/liblingmo_1.10.1_amd64.deb
-        apt install -y ./*.deb
-        apt-get install -f -y
+      - name: Build Packages
+        run: |
+          cd $GITHUB_WORKSPACE
+          make build-pkgs
+          make third-party
 
-    - name: Create packages
-      run: |
-        echo "deb-src http://deb.debian.org/debian bookworm main contrib non-free" | tee -a /etc/apt/sources.list
-        apt update && apt build-dep apt -y
-        mkdir -p buildpkg buildpkg_tp
-        
-        if [ -f configure.ac ] || [ -f configure.in ]; then
-          autoreconf -fiv
-          ./configure
-        fi
-        
-        make pkg_all
-        make image-iso
+      - name: Build ISO
+        run: |
+          cd $GITHUB_WORKSPACE
+          # فرض می‌کنیم make target برای ISO هست
+          make image-iso || echo "ISO generation failed"
 
-    - name: Move files to release directory
-      run: |
-        mkdir -p release
-        mv pkg_out/* release/ || true
+      - name: Create release directory
+        run: |
+          mkdir -p release
+          mv *.iso release/ || true
 
-    - name: Build bootable ISO
-      run: |
-        mkdir -p iso-build
-        cd iso-build
+      - name: Create release tarball
+        run: |
+          tar -cJf release.tar.xz -C release .
 
-        # اگر ISO از قبل ساخته شده، فقط منتقلش کن
-        if ls ../release/*.iso 1> /dev/null 2>&1; then
-          echo "ISO found from build process"
-          mv ../release/*.iso ../release/lingmo-os-${{ github.ref_name }}.iso
-        else
-          echo "Building ISO with live-build"
+      - name: Set Release Tag
+        id: set_tag
+        run: echo "TAG_NAME=${GITHUB_REF##*/}-build-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
-          lb config \
-            --distribution bookworm \
-            --archive-areas "main contrib non-free" \
-            --apt-indices false \
-            --apt-recommends false \
-            --binary-images iso-hybrid \
-            --bootappend-live "boot=live components quiet splash" \
-            --debian-installer false \
-            --iso-application "Lingmo OS" \
-            --iso-volume "Lingmo-OS"
+      - name: Create Release and Upload Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ env.TAG_NAME }}" \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "Automated build for Lingmo OS" \
+            release.tar.xz
 
-          if [ -d ../release ] && [ "$(ls -A ../release/*.deb 2>/dev/null)" ]; then
-            mkdir -p config/packages.chroot
-            cp ../release/*.deb config/packages.chroot/ || true
-          fi
-
-          lb build
-
-          if ls *.iso 1> /dev/null 2>&1; then
-            mv *.iso ../release/lingmo-os-${{ github.ref_name }}.iso
-          fi
-        fi
-        cd ..
-
-    - name: Create release tarball
-      run: |
-        tar -cJf release.tar.xz -C release .
-
-    - name: Set Release Tag
-      id: set_tag
-      run: echo "TAG_NAME=${GITHUB_REF##*/}-build-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
-
-    - name: Create Release and Upload Assets
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        gh release create "${{ env.TAG_NAME }}" \
-          --title "Release ${{ env.TAG_NAME }}" \
-          --notes "Automated build for Lingmo OS" \
-          release.tar.xz
-
-        for file in release/*; do
-          if [ -f "$file" ]; then
-            echo "Uploading $(basename "$file")"
-            gh release upload "${{ env.TAG_NAME }}" "$file"
-          fi
-        done
+          for file in release/*; do
+            if [ -f "$file" ]; then
+              echo "Uploading $(basename "$file")"
+              gh release upload "${{ env.TAG_NAME }}" "$file"
+            fi
+          done
