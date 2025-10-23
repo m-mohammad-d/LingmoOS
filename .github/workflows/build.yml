@@ -1,17 +1,14 @@
 name: Lingmo OS Autobuild
 
-permissions:
-  contents: write
+permissions: write-all
 
 on:
   push:
     branches: [ main ]
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-
-env:
-  DEBIAN_FRONTEND: noninteractive
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:
@@ -20,69 +17,59 @@ jobs:
       image: debian:12
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v2
 
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y wget build-essential autoconf automake \
-            extra-cmake-modules libkf5configwidgets-dev libkf5i18n-dev \
-            libkf5config-dev libkf5iconthemes-dev libkf5guiaddons-dev \
-            rsync file dpkg curl jq cmake
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y wget jq dpkg curl extra-cmake-modules \
+          libkf5configwidgets-dev libkf5i18n-dev libkf5config-dev \
+          libkf5iconthemes-dev libkf5guiaddons-dev rsync autoconf automake \
+          live-build build-essential git gh
 
-      - name: Install Lingmo build tool
-        run: |
-          wget https://packages.lingmo.org/lingmo/pool/main/l/lingmo-pkgbuild/lingmo-pkgbuild_0.1.0-1~lingmo1_amd64.deb
-          wget https://packages.lingmo.org/lingmo/pool/main/libl/liblingmo/liblingmo_1.10.1_amd64.deb
-          dpkg -i ./*.deb || apt-get install -f -y
+    - name: Install Lingmo build tool
+      run: |
+        wget https://packages.lingmo.org/lingmo/pool/main/l/lingmo-pkgbuild/lingmo-pkgbuild_0.1.0-1~lingmo1_amd64.deb
+        wget https://packages.lingmo.org/lingmo/pool/main/libl/liblingmo/liblingmo_1.10.1_amd64.deb
+        apt install -y ./*.deb
+        apt-get install -f -y
 
-      - name: Ensure auto folders exist
-        run: |
-          mkdir -p Build_Pkgs/auto/Debinstaller
-          mkdir -p Build_Pkgs/auto/Icons
+    - name: Prepare build directories
+      run: |
+        mkdir -p Build_Pkgs/auto/Debinstaller
+        mkdir -p Build_Pkgs/auto/Icons
 
-      - name: Initialize Project
-        run: |
-          cd $GITHUB_WORKSPACE
-          make config-pkgs
+    - name: Build Lingmo OS
+      run: |
+        make config-pkgs
+        make build-pkgs
+        make third-party
+        make image-iso
 
-      - name: Build Packages
-        run: |
-          cd $GITHUB_WORKSPACE
-          make build-pkgs
-          make third-party
+    - name: Move ISO and other output
+      run: |
+        mkdir -p release
+        mv Build_Pkgs/*.iso release/ 2>/dev/null || true
+        mv Build_Pkgs/*.deb release/ 2>/dev/null || true
 
-      - name: Build ISO
-        run: |
-          cd $GITHUB_WORKSPACE
-          make image-iso || echo "ISO generation failed"
+    - name: Create release tarball
+      run: |
+        tar -cJf release.tar.xz -C release .
 
-      - name: Create release directory
-        run: |
-          mkdir -p release
-          mv *.iso release/ || true
+    - name: Set Release Tag
+      id: set_tag
+      run: echo "TAG_NAME=3.0.0-rc9-build-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
 
-      - name: Create release tarball
-        run: |
-          tar -cJf release.tar.xz -C release .
+    - name: Upload release assets
+      run: |
+        # اگر Release هنوز وجود ندارد، آن را بساز
+        gh release view ${{ env.TAG_NAME }} || gh release create ${{ env.TAG_NAME }} -t "Release ${{ env.TAG_NAME }}" -n "Autobuild of Lingmo OS"
 
-      - name: Set Release Tag
-        id: set_tag
-        run: echo "TAG_NAME=${GITHUB_REF##*/}-build-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
-
-      - name: Create Release and Upload Assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ env.TAG_NAME }}" \
-            --title "Release ${{ env.TAG_NAME }}" \
-            --notes "Automated build for Lingmo OS" \
-            release.tar.xz
-
-          for file in release/*; do
-            if [ -f "$file" ]; then
-              echo "Uploading $(basename "$file")"
-              gh release upload "${{ env.TAG_NAME }}" "$file"
-            fi
-          done
+        # آپلود فایل‌ها
+        for file in release/*; do
+          if [ -f "$file" ]; then
+            echo "Uploading $file"
+            gh release upload ${{ env.TAG_NAME }} "$file" --clobber
+          fi
+        done
