@@ -37,6 +37,10 @@ jobs:
           wget https://packages.lingmo.org/lingmo/pool/main/libl/liblingmo/liblingmo_1.10.1_amd64.deb
           dpkg -i ./*.deb || apt-get install -f -y
 
+      - name: Clean old auto folders
+        run: |
+          rm -rf Build_Pkgs/auto/{Debinstaller,Icons} || true
+
       - name: Initialize Project
         run: |
           cd $GITHUB_WORKSPACE
